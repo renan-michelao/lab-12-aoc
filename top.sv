@@ -70,5 +70,3 @@ module top (
 
     assign LEDR = pc[11:2]; 
 endmodule
-
-
