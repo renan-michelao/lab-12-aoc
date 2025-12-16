@@ -1,68 +1,72 @@
-module top(
-  input CLOCK_50, // 50 MHz clock
-  input [9:0] SW,
-  input [3:0] KEY, // KEY[0] is reset
-  output reg [9:0] LEDR,
-  output [6:0] HEX5, HEX4, HEX3, HEX2, HEX1, HEX0);
+module top (
+    input        CLOCK_50, // Clock de 50MHz da placa
+    input  [9:0] SW,       // Switches (SW[0] será o TURBO)
+    input  [3:0] KEY,      // Botões (KEY[0] será o Reset)
+    output [6:0] HEX0, HEX1, HEX2, HEX3, HEX4, HEX5, // Displays
+    output [9:0] LEDR      // LEDs vermelhos
+);
 
-  wire memwrite, clk, reset;
-  wire [31:0] pc, instr;
-  wire [31:0] writedata, addr;
-  wire [31:0] readdata;
+    wire clk = CLOCK_50;
+    wire reset = ~KEY[0]; 
 
-  // Novo: saída da memória RAM
-  wire [31:0] MEM_readdata;
+    // Sinais do Processador
+    wire [31:0] pc, instr, readdata, writedata, dataadr;
+    wire memwrite;
 
-  // Novo: saída de leitura dos dispositivos de I/O
-  wire [31:0] IO_readdata;
+    // --- Instancia o Processador ---
+    // Agora ligamos o SW[0] na entrada 'turbo'
+    riscvpipeline cpu(
+        .clk(clk),
+        .reset(reset),
+        .turbo(SW[0]),  // <--- LIGAÇÃO DO MODO TURBO
+        .PC(pc),
+        .Instr(instr),
+        .MemWrite(memwrite),
+        .Address(dataadr),
+        .WriteData(writedata),
+        .ReadData(readdata)
+    );
 
-  integer counter;  
-  always @(posedge CLOCK_50) 
-      counter <= counter + 1;
+    // Memória de Instruções
+    mem #("riscv.hex") imem (
+        .clk(clk),
+        .we(1'b0),     
+        .a(pc),
+        .wd(32'b0),
+        .rd(instr)
+    );
 
-  assign clk = counter[21]; // 50MHz / 2^22 = 11.9 Hz
-  assign reset = ~KEY[0]; // active low
+    // Memória de Dados
+    mem #("data.hex") dmem (
+        .clk(clk),
+        .we(memwrite), 
+        .a(dataadr),
+        .wd(writedata),
+        .rd(readdata)
+    );
 
-  // microprocessor
-  riscvmulti cpu(clk, reset, addr, writedata, memwrite, readdata);
+    // --- Contador de Performance ---
+    reg [31:0] cycle_counter;
+    reg program_finished;
+    wire is_ebreak = (instr == 32'h00100073);
 
-  // memory
-  mem memory(clk, memwrite, addr, writedata, MEM_readdata);
-
-  // memory-mapped i/o
-  wire isIO  = addr[8];  // 0x0000_0100
-  wire isRAM = !isIO;
-
-  localparam IO_LEDS_bit = 2; // 0x0000_0104
-  localparam IO_HEX_bit  = 3; // 0x0000_0108
-  localparam IO_KEY_bit  = 4; // 0x0000_0110
-  localparam IO_SW_bit   = 5; // 0x0000_0120
-
-  reg [23:0] hex_digits;
-
-  dec7seg hex0(hex_digits[ 3: 0], HEX0);
-  dec7seg hex1(hex_digits[ 7: 4], HEX1);
-  dec7seg hex2(hex_digits[11: 8], HEX2);
-  dec7seg hex3(hex_digits[15:12], HEX3);
-  dec7seg hex4(hex_digits[19:16], HEX4);
-  dec7seg hex5(hex_digits[23:20], HEX5);
-
-  // Escrita nos dispositivos de I/O
-  always @(posedge clk)
-    if (memwrite & isIO) begin 
-      if (addr[IO_LEDS_bit])
-        LEDR <= writedata[9:0];
-      if (addr[IO_HEX_bit])
-        hex_digits <= writedata[23:0];
+    always @(posedge clk) begin
+        if (reset) begin
+            cycle_counter <= 0;
+            program_finished <= 0;
+        end else begin
+            if (is_ebreak) program_finished <= 1;
+            if (!program_finished) cycle_counter <= cycle_counter + 1;
+        end
     end
 
-  // Leituras de I/O
-  assign IO_readdata =
-      addr[IO_KEY_bit] ? {28'b0, KEY} :
-      addr[IO_SW_bit]  ? {22'b0, SW}  :
-                         32'b0;
+    // --- Saída Visual (EM DECIMAL) ---
+    hex7seg d0 (cycle_counter % 10, HEX0);
+    hex7seg d1 ((cycle_counter / 10) % 10, HEX1);
+    hex7seg d2 ((cycle_counter / 100) % 10, HEX2);
+    hex7seg d3 ((cycle_counter / 1000) % 10, HEX3);
+    hex7seg d4 ((cycle_counter / 10000) % 10, HEX4);
+    hex7seg d5 ((cycle_counter / 100000) % 10, HEX5);
 
-  // Multiplexador final (IO ou RAM)
-  assign readdata = isIO ? IO_readdata : MEM_readdata;
-
+    assign LEDR = pc[11:2]; 
 endmodule
